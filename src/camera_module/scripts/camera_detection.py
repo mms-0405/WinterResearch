@@ -8,7 +8,7 @@ import numpy as np
 import rospy
 import mediapipe as mp
 from camera_msg.msg import JointState
-
+import time
 
 class human_pose_estimation:
     
@@ -22,13 +22,6 @@ class human_pose_estimation:
         self.config = rs.config()    #  Define configuration config
         self.config.enable_stream(rs.stream.depth, self.camera_width, self.camera_height, rs.format.z16, 15)      #  To configure depth flow 
         self.config.enable_stream(rs.stream.color, self.camera_width, self.camera_height, rs.format.bgr8, 15)     #  To configure color flow 
-
-        # config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 90)
-        # config.enable_stream(rs.stream.color, 848, 480, rs.format.bgr8, 30)
-
-        # config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
-        # config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
-
         self.pipe_profile = self.pipeline.start(self.config)       # streaming The flow begins 
 
         #  Create aligned objects with color Flow alignment 
@@ -38,6 +31,7 @@ class human_pose_estimation:
         # mediapipe init
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_pose = mp.solutions.pose
+        
         self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         
         # ros
@@ -46,57 +40,48 @@ class human_pose_estimation:
         self.output_topic = "human_pose"
         self.pub = rospy.Publisher(self.output_topic, JointState, queue_size=10)
 
- 
+    def run(self):
+        ''' run the whole detection'''
+        global i
+        i = 0
+        while True:
+            # update image
+            self.get_aligned_images() 
+
+            # detect the poses
+            self.detect_pose(self.img_color)
+            
+            #################################################################
+            print(" ")
+            print('***********************************************************')
+            # time.sleep(1)
+            #################################################################
+
+            # show the status        
+            # cv2.imshow('RealSence',self.img_color)
+            key = cv2.waitKey(10)
+            i=i+1
+            # stop
+            if rospy.is_shutdown():
+                print('shutdown')
+                break
 
     '''  Get the alignment image frame and camera parameters  '''
     def get_aligned_images(self):
         
         frames = self.pipeline.wait_for_frames()     #  Wait for image frame , Get the frameset of color and depth  
         aligned_frames = self.align.process(frames)      #  Get alignment frame , Align the depth box with the color box  
-
         self.aligned_depth_frame = aligned_frames.get_depth_frame()      #  Gets the in the alignment frame depth frame  
         self.aligned_color_frame = aligned_frames.get_color_frame()      #  Gets the in the alignment frame color frame 
-
+        
         ####  Get camera parameters  ####
         self.depth_intrin = self.aligned_depth_frame.profile.as_video_stream_profile().intrinsics     #  Get the depth parameter （ Pixel coordinate system to camera coordinate system will use ）
         self.color_intrin = self.aligned_color_frame.profile.as_video_stream_profile().intrinsics     #  Get camera internal parameters 
 
-
         ####  take images To numpy arrays #### 
         self.img_color = np.asanyarray(self.aligned_color_frame.get_data())       # RGB chart  
         self.img_depth = np.asanyarray(self.aligned_depth_frame.get_data())       #  Depth map （ Default 16 position ）
-
         return self.color_intrin, self.depth_intrin, self.img_color, self.img_depth, self.aligned_depth_frame
-
-
-    '''  Obtain the 3D coordinates of random points  '''
-    def get_3d_camera_coordinate(self, depth_pixel):
-        x = depth_pixel[0]
-        y = depth_pixel[1]
-        self.dis = self.aligned_depth_frame.get_distance(x, y)        #  Get the depth corresponding to the pixel 
-        # print ('depth: ',dis) #  The unit of depth is m
-        self.camera_coordinate = rs.rs2_deproject_pixel_to_point(self.depth_intrin, depth_pixel, self.dis)
-        # print ('camera_coordinate: ',camera_coordinate)
-        return self.camera_coordinate
-    
-    def landmark2coordinate(self, landmark):
-        ''' convert landmark to 3D coordinates and show it in the image (img_color)'''
-        # calculate
-        depth_pixel = []
-        depth_pixel.append(round(landmark.x * self.camera_width))
-        depth_pixel.append(round(landmark.y * self.camera_height))
-        
-        if (depth_pixel[0] >= self.camera_width or depth_pixel[1] >= self.camera_height 
-            or depth_pixel[0] < 0 or depth_pixel[1] < 0):
-            # fail
-            return [0,0,-1]
-        
-        self.get_3d_camera_coordinate(depth_pixel)
-
-        # draw
-        self.draw(depth_pixel, self.camera_coordinate)
-        
-        return self.camera_coordinate
 
     # get the pose of human if there is
     def detect_pose(self, frame):
@@ -106,7 +91,9 @@ class human_pose_estimation:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
         results = self.pose.process(frame)
-
+        print('###')
+        print(results.pose_landmarks)
+        print('###')
         # Draw the pose annotation on the image.
         frame.flags.writeable = True
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -118,7 +105,8 @@ class human_pose_estimation:
         # Flip the image horizontally for a selfie-view display.
         cv2.imshow('MediaPipe Pose', cv2.flip(frame, 1))
         cv2.waitKey(10)
-        
+        cv2.imwrite('/home/yumi/WinterResearch/Pics/a'+ str(i) +'.jpg', cv2.flip(frame, 1))
+        cv2.waitKey(1000)
         # calculate angle      
         if results.pose_landmarks:
             # update 2D pose
@@ -126,7 +114,7 @@ class human_pose_estimation:
             
         else:
             self.is_detected = False
-            
+
     def pose_update(self, landmarks):
         # calculate pose
         
@@ -162,36 +150,50 @@ class human_pose_estimation:
         output.right.hip = self.landmark2coordinate(landmark=landmarks.landmark[24])
         # output.right.hip = [landmarks.landmark[24].x, landmarks.landmark[24].y, landmarks.landmark[24].z, landmarks.landmark[24].visibility]
         
+        print("output.left.shoulder =",  output.left.shoulder)
+        print("output.left.elbow =",  output.left.elbow)
+        print("output.left.wrist =", output.left.wrist)
+        print("output.right.shoulder =", output.right.shoulder)
+        print("output.right.elbow =", output.right.elbow)
+        print("output.right.wrist =", output.right.wrist)
+
         # update for ros
         self.pub.publish(output)
+
+    def landmark2coordinate(self, landmark):
+        ''' convert landmark to 3D coordinates and show it in the image (img_color)'''
+        # calculate
+        depth_pixel = []
+        depth_pixel.append(round(landmark.x * self.camera_width))
+        depth_pixel.append(round(landmark.y * self.camera_height))
         
-    
+        if (depth_pixel[0] >= self.camera_width or depth_pixel[1] >= self.camera_height 
+            or depth_pixel[0] < 0 or depth_pixel[1] < 0):
+            # fail
+            return [0,0,-1]
+        
+        self.get_3d_camera_coordinate(depth_pixel)
+
+        # draw
+        self.draw(depth_pixel, self.camera_coordinate)
+        return self.camera_coordinate
+
+    '''  Obtain the 3D coordinates of random points  '''
+    def get_3d_camera_coordinate(self, depth_pixel):
+        x = depth_pixel[0]
+        y = depth_pixel[1]
+        self.dis = self.aligned_depth_frame.get_distance(x, y)        #  Get the depth corresponding to the pixel 
+        # print ('depth: ',self.dis) #  The unit of depth is m
+        self.camera_coordinate = rs.rs2_deproject_pixel_to_point(self.depth_intrin, depth_pixel, self.dis)
+        # print ('camera_coordinate: ',self.camera_coordinate)
+        return self.camera_coordinate
 
     def draw(self, pixel_coor, coor_3d):
         '''  Display images and annotations  '''
         ####  Mark points and their coordinates in the diagram  ####
         cv2.circle(self.img_color, pixel_coor, 8, [255,0,255], thickness=-1)
         cv2.putText(self.img_color,"x: {:.1}, y: {:.1}, z: {:.1}".format(coor_3d[0], coor_3d[1], coor_3d[2]), (pixel_coor[0], pixel_coor[1]-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,[0,0,255])
-
-    def run(self):
-        ''' run the whole detection'''
-        while True:
-            # update image
-            self.get_aligned_images() 
-
-            # detect the poses
-            self.detect_pose(self.img_color)
-            
-            # show the status        
-            cv2.imshow('RealSence',self.img_color)
-            key = cv2.waitKey(10)
-            
-            # stop
-            if rospy.is_shutdown():
-                print('shutdown')
-                break
-        
-        
+           
 if __name__=="__main__":
     my_estimator = human_pose_estimation()
         
